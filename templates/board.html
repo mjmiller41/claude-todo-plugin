@@ -77,6 +77,9 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
     padding: 10px 11px; box-shadow: var(--shadow);
   }
+  .card { cursor: grab; }
+  .card.dragging { opacity: .45; cursor: grabbing; }
+  .col.drag-over { outline: 2px dashed var(--accent); outline-offset: -2px; }
   .card .row1 { display: flex; align-items: flex-start; gap: 8px; }
   .card .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; background: var(--prio-low); }
   .card .dot.high { background: var(--prio-high); }
@@ -184,6 +187,46 @@ function parse(text) {
   if (!columns) columns = [...DEFAULT_COLUMNS];
   return { version, columns, cards };
 }
+
+function serializeCard(card) {
+  const box = card.done ? "x" : " ";
+  let s = `- [${box}] (${card.id}) ${card.title}`;
+  if (card.priority) s += ` !${card.priority}`;
+  for (const tag of card.tags || []) s += ` #${tag}`;
+  return s;
+}
+
+function serialize(model) {
+  const columns = model.columns && model.columns.length ? model.columns : [...DEFAULT_COLUMNS];
+  const out = [];
+  out.push(`<!-- todo-kanban v${model.version || VERSION} -->`);
+  out.push(`<!-- columns: ${columns.join(", ")} -->`);
+  for (const column of columns) {
+    out.push("");
+    out.push(`## ${column}`);
+    for (const card of model.cards.filter(c => c.column === column)) {
+      out.push(serializeCard(card));
+      if (card.note !== null && card.note !== undefined) {
+        for (const noteLine of String(card.note).split("\n")) out.push(`    > ${noteLine}`);
+      }
+    }
+  }
+  out.push("");
+  return out.join("\n");
+}
+
+function doneColumn(model) {
+  return model.columns.includes("Done") ? "Done" : null;
+}
+
+// Mirror of commands.mjs moveCard: sync the done flag to the Done-column rule.
+function applyMove(model, id, column) {
+  const card = model.cards.find(c => c.id === id);
+  if (!card || !model.columns.includes(column)) return null;
+  card.column = column;
+  card.done = column === doneColumn(model);
+  return card;
+}
 // ================== end todo-core ==================
 
 // ---- IndexedDB handle cache (one-click reopen) ----
@@ -224,11 +267,14 @@ const els = {
   pasteArea: document.getElementById("pasteArea"),
 };
 let fileHandle = null;
+let model = null;
+let canWrite = false;
 const supportsFS = "showOpenFilePicker" in window;
 
 function setStatus(msg) { els.status.textContent = msg; }
 
-function render(model) {
+function render(m) {
+  model = m;
   els.empty.style.display = "none";
   els.board.hidden = false;
   els.reloadBtn.hidden = !fileHandle;
@@ -237,18 +283,55 @@ function render(model) {
     const cards = model.cards.filter(c => c.column === col);
     const colEl = document.createElement("section");
     colEl.className = "col";
+    colEl.dataset.col = col;
     colEl.innerHTML = `<h2>${escapeHtml(col)}<span class="count">${cards.length}</span></h2>`;
     const wrap = document.createElement("div");
     wrap.className = "cards";
     for (const card of cards) wrap.appendChild(renderCard(card));
     colEl.appendChild(wrap);
+    if (canWrite) wireDropTarget(colEl, col);
     els.board.appendChild(colEl);
   }
 }
 
+// Drag-and-drop: dropping a card onto a column moves it and writes todo.md.
+function wireDropTarget(colEl, col) {
+  colEl.addEventListener("dragover", (e) => { e.preventDefault(); colEl.classList.add("drag-over"); });
+  colEl.addEventListener("dragleave", () => colEl.classList.remove("drag-over"));
+  colEl.addEventListener("drop", (e) => {
+    e.preventDefault();
+    colEl.classList.remove("drag-over");
+    const id = e.dataTransfer.getData("text/plain");
+    const card = model.cards.find(c => c.id === id);
+    if (!card || card.column === col) return;
+    applyMove(model, id, col);
+    render(model);
+    persist().catch(err => setStatus("save failed: " + err.message));
+  });
+}
+
+async function persist() {
+  if (!fileHandle || !canWrite) return;
+  const w = await fileHandle.createWritable();
+  await w.write(serialize(model));
+  await w.close();
+  lastWrittenMtime = null; // Step 5 will use this to distinguish self-writes.
+  setStatus("saved " + new Date().toLocaleTimeString());
+}
+let lastWrittenMtime = null;
+
 function renderCard(card) {
   const el = document.createElement("article");
   el.className = "card";
+  if (canWrite) {
+    el.draggable = true;
+    el.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/plain", card.id);
+      e.dataTransfer.effectAllowed = "move";
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dragging"));
+  }
   const prioClass = card.priority || "none";
   const tags = card.tags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
   el.innerHTML = `
@@ -277,6 +360,14 @@ async function readAndRender() {
   setStatus("loaded " + new Date(file.lastModified).toLocaleTimeString());
 }
 
+// Resolve readwrite access. interactive=true may prompt (needs a user gesture).
+async function ensureWritable(handle, interactive) {
+  const opts = { mode: "readwrite" };
+  if (await handle.queryPermission(opts) === "granted") return true;
+  if (interactive && await handle.requestPermission(opts) === "granted") return true;
+  return false;
+}
+
 async function pickFile() {
   const [handle] = await window.showOpenFilePicker({
     types: [{ description: "todo.md", accept: { "text/markdown": [".md"] } }],
@@ -284,19 +375,21 @@ async function pickFile() {
   });
   fileHandle = handle;
   await idbSet("todoFile", handle);
+  canWrite = await ensureWritable(handle, true); // within the click gesture
   await readAndRender();
+  if (!canWrite) setStatus("read-only (write permission denied)");
 }
 
 async function tryRestore() {
   if (!supportsFS) return;
   const handle = await idbGet("todoFile");
   if (!handle) return;
-  const perm = await handle.queryPermission({ mode: "read" });
-  if (perm === "granted") {
+  // No user gesture here, so only silently reconnect if permission persists.
+  if (await handle.queryPermission({ mode: "readwrite" }) === "granted") {
     fileHandle = handle;
+    canWrite = true;
     await readAndRender();
   } else {
-    // Needs a user gesture to re-grant; leave the Open button in place.
     setStatus("click Open to reconnect " + handle.name);
   }
 }
