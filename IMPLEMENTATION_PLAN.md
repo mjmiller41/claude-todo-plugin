@@ -110,14 +110,16 @@ todo-kanban/
   README.md
 ```
 
-## Build order (each step independently verifiable)
+## Build order (each step independently verifiable) — MVP COMPLETE
 
-1. **Format + shared module** → `scripts/todo.mjs` parse/serialize. Verify: `roundtrip.test.mjs` green.
-2. **Slash commands** on top of the module: init, add, move, done, list. Verify: run each against a temp `todo.md`, assert diffs.
-3. **board.html — read-only** render from `todo.md` (paste-in first, then FS Access). Verify: open in Chrome, columns/cards match file.
-4. **board.html — write** (drag persists via file handle). Verify: drag card, reload page, position persisted; `git diff todo.md` shows the move.
-5. **board.html — poll/live-sync.** Verify: with board open, run `/todo move`; card jumps columns within ~1s without reload.
-6. **Package as plugin** (`plugin.json`, install locally). Verify: `/todo` commands available in a fresh project; `/todo init` scaffolds; end-to-end loop works.
+- [x] 1. **Format + shared module** → `scripts/todo.mjs` parse/serialize. Verify: `roundtrip.test.mjs` green. *(10 tests)*
+- [x] 2. **Slash commands** on top of the module: init, add, move, done, list. Verify: run each against a temp `todo.md`, assert diffs. *(`commands.mjs` + `cli.mjs`, 10 tests, temp-dir smoke test)*
+- [x] 3. **board.html — read-only** render from `todo.md` (paste-in first, then FS Access). Verify: open in Chrome, columns/cards match file. *(parity test: board parser == `todo.mjs`)*
+- [x] 4. **board.html — write** (drag persists via file handle). Verify: drag card, reload page, position persisted; `git diff todo.md` shows the move. *(serialize + applyMove parity-tested vs `commands.mjs`)*
+- [x] 5. **board.html — poll/live-sync.** Verify: with board open, run `/todo move`; card jumps columns within ~1s without reload. *(demonstrated live on demo project)*
+- [x] 6. **Package as plugin** (`plugin.json`, install locally). Verify: `/todo` commands available in a fresh project; `/todo init` scaffolds; end-to-end loop works. *(+ `marketplace.json`, README)*
+
+Full suite: **23/23**. All steps merged to `main` (commits `5dfbcc6` → `66650e1`).
 
 ## MVP cut line (explicitly deferred)
 - No due dates, no assignees, no archive, no per-card history.
