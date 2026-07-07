@@ -34,10 +34,14 @@ This is a local Claude Code plugin. Point Claude Code at the plugin directory
 (via your plugin config / marketplace), then in any project:
 
 ```
-/todo init
+/todo:init
 ```
 
 That creates `todo.md` at the project root and `.todo/board.html`.
+
+> Claude Code namespaces plugin commands as `plugin:command`. This plugin is
+> named `todo` and each subcommand is its own command, so you invoke them as
+> `/todo:init`, `/todo:add`, etc.
 
 Open the board by double-clicking `.todo/board.html` (or `open`/`xdg-open` it),
 click **Open todo.md…**, and pick the `todo.md` at your project root. Chrome asks
@@ -50,12 +54,12 @@ once for access; the choice is remembered for one-click reopen.
 
 | Command | What it does |
 |---|---|
-| `/todo init` | Scaffold `todo.md` + `.todo/board.html`. Idempotent. |
-| `/todo add "Title" [!prio] [#tag …] [--col "Column"]` | Add a card (auto-assigned ID). |
-| `/todo move <ID> "Column"` | Move a card; syncs its done state to the Done column. |
-| `/todo done <ID>` | Shortcut for moving a card to Done. |
-| `/todo list [--col C] [--tag t] [--prio p]` | Print the board (filtered) in chat. |
-| `/todo open` | Show the board path and how to open it. |
+| `/todo:init` | Scaffold `todo.md` + `.todo/board.html`. Idempotent. |
+| `/todo:add "Title" [!prio] [#tag …] [--col "Column"]` | Add a card (auto-assigned ID). |
+| `/todo:move <ID> "Column"` | Move a card; syncs its done state to the Done column. |
+| `/todo:done <ID>` | Shortcut for moving a card to Done. |
+| `/todo:list [--col C] [--tag t] [--prio p]` | Print the board (filtered) in chat. |
+| `/todo:open` | Show the board path and how to open it. |
 
 Priority is `!low`, `!med`, or `!high`; tags are `#tag`.
 
@@ -100,8 +104,8 @@ npm test   # node --test — round-trip, command, and board-parity suites
 ## Layout
 
 ```
-.claude-plugin/plugin.json   plugin manifest
-commands/todo.md             the /todo slash command
+.claude-plugin/plugin.json   plugin manifest (name: todo)
+commands/*.md                one file per subcommand (init, add, move, done, list, open)
 scripts/todo.mjs             parse/serialize core (shared contract)
 scripts/commands.mjs         pure model mutations (Done-coupling lives here)
 scripts/cli.mjs              file-I/O CLI the command invokes
