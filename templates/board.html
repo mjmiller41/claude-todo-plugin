@@ -315,10 +315,41 @@ async function persist() {
   const w = await fileHandle.createWritable();
   await w.write(serialize(model));
   await w.close();
-  lastWrittenMtime = null; // Step 5 will use this to distinguish self-writes.
+  // Advance the watermark past our own write so the poll won't treat it as
+  // an external change and reload (which would be a redundant re-render).
+  const f = await fileHandle.getFile();
+  lastLoadedMtime = f.lastModified;
   setStatus("saved " + new Date().toLocaleTimeString());
 }
-let lastWrittenMtime = null;
+
+// ---- Live sync: poll the file's mtime so Claude's edits show up on the board.
+let lastLoadedMtime = 0;
+let dragging = false;
+let polling = false;
+let pollStarted = false;
+
+function startPolling() {
+  if (pollStarted) return;
+  pollStarted = true;
+  setInterval(async () => {
+    if (!fileHandle || dragging || polling || document.hidden) return;
+    polling = true;
+    try {
+      const file = await fileHandle.getFile();
+      if (file.lastModified > lastLoadedMtime) {
+        const text = await file.text();
+        render(parse(text));
+        lastLoadedMtime = file.lastModified;
+        setStatus("updated " + new Date(file.lastModified).toLocaleTimeString());
+      }
+    } catch (_) {
+      // Transient read errors (file mid-write, permission lapse) are ignored;
+      // the next tick retries.
+    } finally {
+      polling = false;
+    }
+  }, 1000);
+}
 
 function renderCard(card) {
   const el = document.createElement("article");
@@ -329,8 +360,9 @@ function renderCard(card) {
       e.dataTransfer.setData("text/plain", card.id);
       e.dataTransfer.effectAllowed = "move";
       el.classList.add("dragging");
+      dragging = true;
     });
-    el.addEventListener("dragend", () => el.classList.remove("dragging"));
+    el.addEventListener("dragend", () => { el.classList.remove("dragging"); dragging = false; });
   }
   const prioClass = card.priority || "none";
   const tags = card.tags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
@@ -356,8 +388,10 @@ async function readAndRender() {
   const file = await fileHandle.getFile();
   const text = await file.text();
   render(parse(text));
+  lastLoadedMtime = file.lastModified;
   els.filepath.textContent = fileHandle.name;
   setStatus("loaded " + new Date(file.lastModified).toLocaleTimeString());
+  startPolling();
 }
 
 // Resolve readwrite access. interactive=true may prompt (needs a user gesture).
