@@ -1,0 +1,7 @@
+{
+  "name": "todo-kanban",
+  "version": "0.1.0",
+  "description": "Project-level kanban todo tracker: one todo.md source of truth, a self-contained drag-and-drop HTML board, no server.",
+  "author": { "name": "Michael J. Miller" },
+  "commands": ["./commands/todo.md"]
+}
