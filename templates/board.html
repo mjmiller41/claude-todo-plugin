@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>todo-kanban</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #eef0f3;
+    --ink: #1a1d21;
+    --muted: #6b7280;
+    --line: #dfe3e8;
+    --accent: #3b82f6;
+    --prio-high: #ef4444;
+    --prio-med: #f59e0b;
+    --prio-low: #9ca3af;
+    --shadow: 0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --panel: #171b21;
+      --panel-2: #1e242c;
+      --ink: #e6e9ee;
+      --muted: #9aa4b2;
+      --line: #2a313b;
+      --accent: #60a5fa;
+      --shadow: 0 1px 2px rgba(0,0,0,.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--bg); z-index: 5;
+  }
+  header h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: .2px; }
+  header .path { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+  header .spacer { flex: 1; }
+  button {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  button:hover { filter: brightness(1.03); }
+  #status { color: var(--muted); font-size: 12px; }
+
+  #board {
+    display: flex; gap: 14px; align-items: flex-start;
+    padding: 18px; overflow-x: auto; min-height: calc(100% - 56px);
+  }
+  .col {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    width: 280px; flex: 0 0 280px; display: flex; flex-direction: column; max-height: 100%;
+  }
+  .col > h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+    margin: 0; padding: 12px 14px 8px; display: flex; justify-content: space-between;
+  }
+  .col > h2 .count {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 20px;
+    padding: 0 8px; font-size: 11px; color: var(--muted);
+  }
+  .cards { padding: 4px 10px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 11px; box-shadow: var(--shadow);
+  }
+  .card .row1 { display: flex; align-items: flex-start; gap: 8px; }
+  .card .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; flex: 0 0 auto; background: var(--prio-low); }
+  .card .dot.high { background: var(--prio-high); }
+  .card .dot.med { background: var(--prio-med); }
+  .card .dot.none { background: transparent; border: 1px solid var(--line); }
+  .card .title { flex: 1; font-weight: 500; }
+  .card .title.done { text-decoration: line-through; color: var(--muted); }
+  .card .id { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
+  .card .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .card .tag {
+    font-size: 11px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px;
+  }
+  .card .note {
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
+    color: var(--muted); font-size: 12.5px; white-space: pre-wrap; display: none;
+  }
+  .card.open .note { display: block; }
+  .card .note-toggle { cursor: pointer; color: var(--accent); font-size: 11px; margin-top: 6px; user-select: none; }
+
+  #empty {
+    max-width: 560px; margin: 8vh auto; text-align: center; color: var(--muted);
+    padding: 0 20px;
+  }
+  #empty h2 { color: var(--ink); }
+  #fallback { display: none; max-width: 720px; margin: 24px auto; padding: 0 18px; }
+  #fallback textarea {
+    width: 100%; height: 240px; font-family: ui-monospace, monospace; font-size: 12.5px;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 12px;
+  }
+  .hint { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>todo-kanban</h1>
+  <span class="path" id="filepath"></span>
+  <span class="spacer"></span>
+  <span id="status"></span>
+  <button id="openBtn" class="primary">Open todo.md…</button>
+  <button id="reloadBtn" hidden>Reload</button>
+</header>
+
+<div id="empty">
+  <h2>Open your project's <code>todo.md</code></h2>
+  <p>Click <b>Open todo.md…</b> and pick the <code>todo.md</code> at your project root.
+  Chrome will ask once for access to the file. Your board renders below and stays in sync
+  as the file changes.</p>
+  <p class="hint">This board reads the file locally in your browser. Nothing is uploaded.</p>
+</div>
+
+<div id="fallback">
+  <h2>Paste mode</h2>
+  <p class="hint">Your browser doesn't support the File System Access API (Chromium only).
+  Paste the contents of <code>todo.md</code> below to view the board read-only.</p>
+  <textarea id="pasteArea" placeholder="Paste todo.md contents here…"></textarea>
+</div>
+
+<div id="board" hidden></div>
+
+<script type="module">
+// ==================== todo-core (mirrors scripts/todo.mjs) ====================
+// Keep in sync with scripts/todo.mjs. Round-trip behavior is covered by
+// test/roundtrip.test.mjs against the same grammar.
+const DEFAULT_COLUMNS = ["Backlog", "Todo", "In Progress", "Blocked", "Done"];
+const VERSION = 1;
+const HEADER_RE = /^<!--\s*todo-kanban v(\d+)\s*-->$/;
+const COLUMNS_RE = /^<!--\s*columns:\s*(.+?)\s*-->$/;
+const HEADING_RE = /^##\s+(.+?)\s*$/;
+const CARD_RE = /^-\s+\[([ xX])\]\s+\(([A-Za-z]+\d+)\)\s+(.*)$/;
+const NOTE_RE = /^\s{2,}>\s?(.*)$/;
+const PRIORITY_TOKEN_RE = /(?:^|\s)!(low|med|high)(?=\s|$)/g;
+const TAG_TOKEN_RE = /(?:^|\s)#([\w-]+)(?=\s|$)/g;
+
+function extractMeta(raw) {
+  let priority = null; const tags = []; let m;
+  PRIORITY_TOKEN_RE.lastIndex = 0;
+  while ((m = PRIORITY_TOKEN_RE.exec(raw)) !== null) priority = m[1];
+  TAG_TOKEN_RE.lastIndex = 0;
+  while ((m = TAG_TOKEN_RE.exec(raw)) !== null) tags.push(m[1]);
+  const title = raw.replace(PRIORITY_TOKEN_RE, " ").replace(TAG_TOKEN_RE, " ").replace(/\s+/g, " ").trim();
+  return { title, priority, tags };
+}
+
+function parse(text) {
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+  let version = VERSION, columns = null; const cards = [];
+  let currentColumn = null, lastCard = null;
+  for (const line of lines) {
+    let m;
+    if ((m = line.match(HEADER_RE))) { version = Number(m[1]); continue; }
+    if ((m = line.match(COLUMNS_RE))) { columns = m[1].split(",").map(c => c.trim()).filter(Boolean); continue; }
+    if ((m = line.match(HEADING_RE))) { currentColumn = m[1]; lastCard = null; continue; }
+    if ((m = line.match(CARD_RE))) {
+      const meta = extractMeta(m[3]);
+      const card = { id: m[2], title: meta.title, done: m[1].toLowerCase() === "x",
+        column: currentColumn, priority: meta.priority, tags: meta.tags, note: null };
+      cards.push(card); lastCard = card; continue;
+    }
+    if ((m = line.match(NOTE_RE)) && lastCard) {
+      lastCard.note = lastCard.note === null ? m[1] : lastCard.note + "\n" + m[1]; continue;
+    }
+    if (line.trim() === "") lastCard = null;
+  }
+  if (!columns) columns = [...DEFAULT_COLUMNS];
+  return { version, columns, cards };
+}
+// ================== end todo-core ==================
+
+// ---- IndexedDB handle cache (one-click reopen) ----
+const IDB = { db: null };
+function idb() {
+  if (IDB.db) return Promise.resolve(IDB.db);
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("todo-kanban", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("handles");
+    r.onsuccess = () => { IDB.db = r.result; res(IDB.db); };
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("handles", "readonly").objectStore("handles").get(key);
+    tx.onsuccess = () => res(tx.result); tx.onerror = () => rej(tx.error);
+  });
+}
+async function idbSet(key, val) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("handles", "readwrite").objectStore("handles").put(val, key);
+    tx.onsuccess = () => res(); tx.onerror = () => rej(tx.error);
+  });
+}
+
+// ---- App state ----
+const els = {
+  board: document.getElementById("board"),
+  empty: document.getElementById("empty"),
+  fallback: document.getElementById("fallback"),
+  status: document.getElementById("status"),
+  filepath: document.getElementById("filepath"),
+  openBtn: document.getElementById("openBtn"),
+  reloadBtn: document.getElementById("reloadBtn"),
+  pasteArea: document.getElementById("pasteArea"),
+};
+let fileHandle = null;
+const supportsFS = "showOpenFilePicker" in window;
+
+function setStatus(msg) { els.status.textContent = msg; }
+
+function render(model) {
+  els.empty.style.display = "none";
+  els.board.hidden = false;
+  els.reloadBtn.hidden = !fileHandle;
+  els.board.innerHTML = "";
+  for (const col of model.columns) {
+    const cards = model.cards.filter(c => c.column === col);
+    const colEl = document.createElement("section");
+    colEl.className = "col";
+    colEl.innerHTML = `<h2>${escapeHtml(col)}<span class="count">${cards.length}</span></h2>`;
+    const wrap = document.createElement("div");
+    wrap.className = "cards";
+    for (const card of cards) wrap.appendChild(renderCard(card));
+    colEl.appendChild(wrap);
+    els.board.appendChild(colEl);
+  }
+}
+
+function renderCard(card) {
+  const el = document.createElement("article");
+  el.className = "card";
+  const prioClass = card.priority || "none";
+  const tags = card.tags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
+  el.innerHTML = `
+    <div class="row1">
+      <span class="dot ${prioClass}" title="${card.priority ? "priority: " + card.priority : "no priority"}"></span>
+      <span class="title ${card.done ? "done" : ""}">${escapeHtml(card.title)}</span>
+      <span class="id">${escapeHtml(card.id)}</span>
+    </div>
+    ${tags ? `<div class="tags">${tags}</div>` : ""}
+    ${card.note !== null ? `<div class="note-toggle">notes ▾</div><div class="note">${escapeHtml(card.note)}</div>` : ""}
+  `;
+  const toggle = el.querySelector(".note-toggle");
+  if (toggle) toggle.addEventListener("click", () => el.classList.toggle("open"));
+  return el;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function readAndRender() {
+  const file = await fileHandle.getFile();
+  const text = await file.text();
+  render(parse(text));
+  els.filepath.textContent = fileHandle.name;
+  setStatus("loaded " + new Date(file.lastModified).toLocaleTimeString());
+}
+
+async function pickFile() {
+  const [handle] = await window.showOpenFilePicker({
+    types: [{ description: "todo.md", accept: { "text/markdown": [".md"] } }],
+    multiple: false,
+  });
+  fileHandle = handle;
+  await idbSet("todoFile", handle);
+  await readAndRender();
+}
+
+async function tryRestore() {
+  if (!supportsFS) return;
+  const handle = await idbGet("todoFile");
+  if (!handle) return;
+  const perm = await handle.queryPermission({ mode: "read" });
+  if (perm === "granted") {
+    fileHandle = handle;
+    await readAndRender();
+  } else {
+    // Needs a user gesture to re-grant; leave the Open button in place.
+    setStatus("click Open to reconnect " + handle.name);
+  }
+}
+
+// ---- Wire up ----
+if (!supportsFS) {
+  els.fallback.style.display = "block";
+  els.openBtn.hidden = true;
+  els.pasteArea.addEventListener("input", () => {
+    const text = els.pasteArea.value;
+    if (text.trim()) render(parse(text));
+  });
+} else {
+  els.openBtn.addEventListener("click", () => pickFile().catch(e => {
+    if (e.name !== "AbortError") setStatus("error: " + e.message);
+  }));
+  els.reloadBtn.addEventListener("click", () => readAndRender().catch(e => setStatus("error: " + e.message)));
+  tryRestore().catch(() => {});
+}
+</script>
+</body>
+</html>
