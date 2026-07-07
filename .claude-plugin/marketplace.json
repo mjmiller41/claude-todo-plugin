@@ -1,0 +1,11 @@
+{
+  "name": "mjmiller-plugins",
+  "owner": { "name": "Michael J. Miller" },
+  "plugins": [
+    {
+      "name": "todo-kanban",
+      "source": "./",
+      "description": "Project-level kanban todo tracker: one todo.md source of truth, a self-contained drag-and-drop HTML board, no server."
+    }
+  ]
+}
