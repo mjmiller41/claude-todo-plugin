@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>todo-kanban</title>
+<title>claude-todo-plugin · todo-kanban</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -156,7 +156,6 @@ const DEFAULT_COLUMNS = ["Backlog", "Todo", "In Progress", "Blocked", "Done"];
 const VERSION = 1;
 const HEADER_RE = /^<!--\s*todo-kanban v(\d+)\s*-->$/;
 const COLUMNS_RE = /^<!--\s*columns:\s*(.+?)\s*-->$/;
-const NEXT_RE = /^<!--\s*next:\s*(\d+)\s*-->$/;
 const HEADING_RE = /^##\s+(.+?)\s*$/;
 const CARD_RE = /^-\s+\[([ xX])\]\s+\(([A-Za-z]+\d+)\)\s+(.*)$/;
 const NOTE_RE = /^\s{2,}>\s?(.*)$/;
@@ -175,13 +174,12 @@ function extractMeta(raw) {
 
 function parse(text) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
-  let version = VERSION, columns = null, next = null; const cards = [];
+  let version = VERSION, columns = null; const cards = [];
   let currentColumn = null, lastCard = null;
   for (const line of lines) {
     let m;
     if ((m = line.match(HEADER_RE))) { version = Number(m[1]); continue; }
     if ((m = line.match(COLUMNS_RE))) { columns = m[1].split(",").map(c => c.trim()).filter(Boolean); continue; }
-    if ((m = line.match(NEXT_RE))) { next = Number(m[1]); continue; }
     if ((m = line.match(HEADING_RE))) { currentColumn = m[1]; lastCard = null; continue; }
     if ((m = line.match(CARD_RE))) {
       const meta = extractMeta(m[3]);
@@ -195,9 +193,7 @@ function parse(text) {
     if (line.trim() === "") lastCard = null;
   }
   if (!columns) columns = [...DEFAULT_COLUMNS];
-  const model = { version, columns, cards };
-  if (next !== null) model.next = next;
-  return model;
+  return { version, columns, cards };
 }
 
 function serializeCard(card) {
@@ -213,7 +209,6 @@ function serialize(model) {
   const out = [];
   out.push(`<!-- todo-kanban v${model.version || VERSION} -->`);
   out.push(`<!-- columns: ${columns.join(", ")} -->`);
-  if (Number.isInteger(model.next)) out.push(`<!-- next: ${model.next} -->`);
   for (const column of columns) {
     out.push("");
     out.push(`## ${column}`);

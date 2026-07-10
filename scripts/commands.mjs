@@ -27,6 +27,24 @@ function findCard(model, id) {
   return card;
 }
 
+/** Mint a fresh, never-reused id and advance the model's high-water mark.
+ *  Uses the persisted `model.next` counter when present; otherwise seeds it from
+ *  the existing ids (so a legacy board upgrades cleanly on its first add). The
+ *  collision guard defends against a hand-authored id sitting at the counter. */
+function mintId(model) {
+  const existing = new Set(model.cards.map((c) => c.id));
+  let n = Number.isInteger(model.next)
+    ? model.next
+    : Number(/(\d+)$/.exec(nextId(model.cards))[1]); // derive from existing ids
+  let id = "T" + String(n).padStart(2, "0");
+  while (existing.has(id)) {
+    n += 1;
+    id = "T" + String(n).padStart(2, "0");
+  }
+  model.next = n + 1; // persist the mark so a later delete can't cause reuse
+  return id;
+}
+
 /** Add a card. Returns { model, card }. Mutates model.cards. */
 export function addCard(model, { title, priority = null, tags = [], column = null } = {}) {
   const text = (title ?? "").trim();
@@ -38,7 +56,7 @@ export function addCard(model, { title, priority = null, tags = [], column = nul
   assertColumn(model, col);
 
   const card = {
-    id: nextId(model.cards),
+    id: mintId(model),
     title: text,
     done: col === doneColumn(model),
     column: col,
@@ -47,6 +65,34 @@ export function addCard(model, { title, priority = null, tags = [], column = nul
     note: null,
   };
   model.cards.push(card);
+  return { model, card };
+}
+
+/** Edit an existing card in place. `patch` may carry any subset of
+ *  { title, priority, tags, note, column }; omitted keys are left untouched.
+ *  `priority: null` clears it; `note: null` clears the note; changing `column`
+ *  re-syncs the Done coupling exactly as moveCard does. Returns { model, card }. */
+export function editCard(model, id, patch = {}) {
+  const card = findCard(model, id);
+  if (patch.title !== undefined) {
+    const t = String(patch.title).trim();
+    if (!t) throw new Error("title cannot be empty");
+    card.title = t;
+  }
+  if (patch.priority !== undefined) {
+    const p = patch.priority;
+    if (p !== null && !PRIORITIES.includes(p)) {
+      throw new Error(`invalid priority: ${p} (use ${PRIORITIES.join("|")}|none)`);
+    }
+    card.priority = p;
+  }
+  if (patch.tags !== undefined) card.tags = [...patch.tags];
+  if (patch.note !== undefined) card.note = patch.note === null ? null : String(patch.note);
+  if (patch.column !== undefined && patch.column !== null) {
+    assertColumn(model, patch.column);
+    card.column = patch.column;
+    card.done = patch.column === doneColumn(model);
+  }
   return { model, card };
 }
 

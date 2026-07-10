@@ -1,8 +1,11 @@
 {
   "name": "todo-kanban",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Project-level kanban todo tracker for Claude Code: one todo.md source of truth, a self-contained HTML board, no server.",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "test": "node --test"
   },

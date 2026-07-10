@@ -22,6 +22,7 @@ export const PRIORITIES = ["low", "med", "high"];
 
 const HEADER_RE = /^<!--\s*todo-kanban v(\d+)\s*-->$/;
 const COLUMNS_RE = /^<!--\s*columns:\s*(.+?)\s*-->$/;
+const NEXT_RE = /^<!--\s*next:\s*(\d+)\s*-->$/;
 const HEADING_RE = /^##\s+(.+?)\s*$/;
 const CARD_RE = /^-\s+\[([ xX])\]\s+\(([A-Za-z]+\d+)\)\s+(.*)$/;
 const NOTE_RE = /^\s{2,}>\s?(.*)$/;
@@ -55,6 +56,7 @@ export function parse(text) {
   const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
   let version = VERSION;
   let columns = null;
+  let next = null;
   const cards = [];
   let currentColumn = null;
   let lastCard = null;
@@ -67,6 +69,10 @@ export function parse(text) {
     }
     if ((m = line.match(COLUMNS_RE))) {
       columns = m[1].split(",").map((c) => c.trim()).filter(Boolean);
+      continue;
+    }
+    if ((m = line.match(NEXT_RE))) {
+      next = Number(m[1]);
       continue;
     }
     if ((m = line.match(HEADING_RE))) {
@@ -100,7 +106,13 @@ export function parse(text) {
   }
 
   if (!columns) columns = [...DEFAULT_COLUMNS];
-  return { version, columns, cards };
+  // `next` is the monotonic id high-water mark. Only surface the key when the
+  // file actually carries a `<!-- next: N -->` line, so a headerless file still
+  // round-trips to a model with no `next` (keeps serialize∘parse an identity and
+  // deepEqual-based tests honest).
+  const model = { version, columns, cards };
+  if (next !== null) model.next = next;
+  return model;
 }
 
 /** Serialize one card line (without note). */
@@ -118,6 +130,7 @@ export function serialize(model) {
   const out = [];
   out.push(`<!-- todo-kanban v${model.version || VERSION} -->`);
   out.push(`<!-- columns: ${columns.join(", ")} -->`);
+  if (Number.isInteger(model.next)) out.push(`<!-- next: ${model.next} -->`);
 
   for (const column of columns) {
     out.push("");
@@ -135,11 +148,13 @@ export function serialize(model) {
   return out.join("\n");
 }
 
-/** Next free ID (T01, T02, …) given existing cards. */
+/** Next free ID (T01, T02, …) given existing cards.
+ *  Scans the trailing digits of ANY id prefix (T05, X07, …) for the high-water
+ *  mark, so a hand-authored non-`T` id can't collide with the next minted one. */
 export function nextId(cards) {
   let max = 0;
   for (const c of cards) {
-    const m = /^T(\d+)$/.exec(c.id);
+    const m = /(\d+)$/.exec(c.id);
     if (m) max = Math.max(max, Number(m[1]));
   }
   return "T" + String(max + 1).padStart(2, "0");

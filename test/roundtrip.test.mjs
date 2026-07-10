@@ -117,6 +117,31 @@ test("nextId assigns the next zero-padded T-id", () => {
   assert.equal(nextId([{ id: "T02" }, { id: "T05" }]), "T06");
 });
 
+test("nextId counts trailing digits of any id prefix (not just T)", () => {
+  assert.equal(nextId([{ id: "X07" }]), "T08");
+  assert.equal(nextId([{ id: "T02" }, { id: "BUG11" }]), "T12");
+});
+
+test("the next-id counter is parsed and survives round-trip", () => {
+  const src = `<!-- todo-kanban v1 -->
+<!-- columns: Todo, Done -->
+<!-- next: 7 -->
+
+## Todo
+- [ ] (T06) latest
+
+## Done
+`;
+  const m = parse(src);
+  assert.equal(m.next, 7);
+  assert.equal(serialize(m), src); // exact round-trip, counter line preserved in place
+});
+
+test("a file without a next line parses to a model with no next key", () => {
+  const m = parse(`## Todo\n- [ ] (T01) bare\n`);
+  assert.ok(!("next" in m), "next key must be absent so serialize∘parse stays an identity");
+});
+
 test("emptyModel is a valid, serializable empty board", () => {
   const m = emptyModel();
   assert.equal(m.cards.length, 0);
