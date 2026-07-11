@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { get, request } from "node:http";
@@ -248,6 +248,84 @@ test("A5: missing or empty Host header is 403 (fails closed)", async () => {
     // Present-but-empty Host value.
     const empty = await raw(d.port, { path: "/health", host: "" });
     assert.equal(empty.status, 403);
+  } finally {
+    await d.close();
+  }
+});
+
+// ---- F2: realpath containment for served files ----
+
+test("A6: symlink escaping the project dir is 403 and leaks nothing", async () => {
+  const d = await startDaemon();
+  try {
+    const proj = makeProject(d.root, "iota");
+    // A secret file that lives OUTSIDE the project dir.
+    const outsideDir = join(d.root, "outside");
+    mkdirSync(outsideDir, { recursive: true });
+    const secret = "TOP-SECRET-CONTENTS";
+    writeFileSync(join(outsideDir, "secret.txt"), secret);
+
+    // (a) a file symlink inside the project pointing at the outside secret.
+    symlinkSync(join(outsideDir, "secret.txt"), join(proj, "leak.txt"));
+    // (b) a directory symlink inside the project pointing at the outside dir.
+    symlinkSync(outsideDir, join(proj, "link"));
+
+    const id = await register(d.base, proj);
+
+    const viaFile = await fetch(`${d.base}/b/${id}/leak.txt`);
+    assert.equal(viaFile.status, 403);
+    assert.doesNotMatch(await viaFile.text(), /TOP-SECRET/);
+
+    const viaDir = await fetch(`${d.base}/b/${id}/link/secret.txt`);
+    assert.equal(viaDir.status, 403);
+    assert.doesNotMatch(await viaDir.text(), /TOP-SECRET/);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A7: regular files and in-project symlinks still serve 200", async () => {
+  const d = await startDaemon();
+  try {
+    const proj = makeProject(d.root, "kappa");
+    // A symlink whose real path stays inside the project dir.
+    writeFileSync(join(proj, "inside.txt"), "INSIDE-OK");
+    symlinkSync(join(proj, "inside.txt"), join(proj, "alias.txt"));
+    const id = await register(d.base, proj);
+
+    const md = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(md.status, 200);
+    assert.match(await md.text(), /kappa task/);
+
+    const board = await fetch(`${d.base}/b/${id}/todo-board.html`);
+    assert.equal(board.status, 200);
+    assert.match(await board.text(), /kappa · todo-kanban/);
+
+    const alias = await fetch(`${d.base}/b/${id}/alias.txt`);
+    assert.equal(alias.status, 200);
+    assert.equal(await alias.text(), "INSIDE-OK");
+  } finally {
+    await d.close();
+  }
+});
+
+test("A8: containment uses real paths on both sides; .. still 403", async () => {
+  const d = await startDaemon();
+  try {
+    // Real project, then register it via a path with a symlinked ancestor dir.
+    const real = makeProject(d.root, "lambda-real");
+    const linkDir = join(d.root, "lambda-link");
+    symlinkSync(real, linkDir); // linkDir -> real (symlinked ancestor of files)
+    const id = await register(d.base, linkDir);
+
+    // No false 403: the project's own files serve 200 despite the symlinked path.
+    const md = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(md.status, 200);
+    assert.match(await md.text(), /lambda-real task/);
+
+    // `..` traversal in the URL is still rejected 403 (lexical prefix check).
+    const escape = await raw(d.port, { path: `/b/${id}/../../etc/passwd`, host: "127.0.0.1" });
+    assert.equal(escape.status, 403);
   } finally {
     await d.close();
   }

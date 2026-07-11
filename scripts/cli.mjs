@@ -17,7 +17,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve, extname, basename } from "node:path";
+import { dirname, join, resolve, extname, basename, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, serialize, emptyModel, PRIORITIES } from "./todo.mjs";
 import { addCard, moveCard, doneCardById, listCards, editCard, removeCard } from "./commands.mjs";
@@ -416,10 +416,27 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
     const relPath = rest === "/" ? "/todo-board.html" : rest;
     const target = relPath === "/todo.md" ? todoFile : join(dir, relPath.replace(/^\/+/, ""));
     const resolved = resolve(target);
-    if (resolved !== resolve(dir) && !resolved.startsWith(resolve(dir) + "/")) {
+    // Lexical prefix check first: blocks `..` traversal in the URL up front,
+    // independent of whether the traversed path exists (so it 403s, not 404s).
+    if (resolved !== resolve(dir) && !resolved.startsWith(resolve(dir) + sep)) {
       return void res.writeHead(403).end();
     }
     if (!existsSync(resolved)) return void res.writeHead(404).end("not found");
+    // Containment on REAL paths, BOTH sides: resolve symlinks in the target and
+    // in the project dir. Realpath'ing the dir too means a project registered via
+    // a path with a symlinked ancestor doesn't false-403; realpath'ing the target
+    // means a symlink (a file, or a symlinked subdirectory) whose real path
+    // escapes the project is rejected 403 before any bytes are read/leaked.
+    let realTarget, realDir;
+    try {
+      realTarget = realpathSync(resolved);
+      realDir = realpathSync(dir);
+    } catch {
+      return void res.writeHead(404).end("not found");
+    }
+    if (realTarget !== realDir && !realTarget.startsWith(realDir + sep)) {
+      return void res.writeHead(403).end();
+    }
     const ext = extname(resolved);
     const type =
       ext === ".html" ? "text/html; charset=utf-8"
