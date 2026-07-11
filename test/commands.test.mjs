@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyModel } from "../scripts/todo.mjs";
+import { emptyModel, serialize, parse } from "../scripts/todo.mjs";
 import {
   addCard,
   moveCard,
@@ -125,6 +125,36 @@ test("editCard validates id, priority, and empty title", () => {
   assert.throws(() => editCard(m, "T99", { title: "y" }), /no card with id/);
   assert.throws(() => editCard(m, card.id, { priority: "urgent" }), /invalid priority/);
   assert.throws(() => editCard(m, card.id, { title: "   " }), /title cannot be empty/);
+});
+
+test("editCard sets context independently of note, both cleared with null", () => {
+  const m = emptyModel(["Todo", "Done"]);
+  const { card } = addCard(m, { title: "x" });
+  assert.equal(card.context, null);
+  editCard(m, card.id, { note: "n1", context: "c1\nc2" });
+  assert.equal(card.note, "n1");
+  assert.equal(card.context, "c1\nc2");
+  editCard(m, card.id, { note: "n2" }); // context untouched
+  assert.equal(card.context, "c1\nc2");
+  editCard(m, card.id, { context: "c3" }); // note untouched
+  assert.equal(card.note, "n2");
+  editCard(m, card.id, { context: null });
+  assert.equal(card.context, null);
+  assert.equal(card.note, "n2");
+});
+
+test("adversarial context content is inert through serialize+reparse (A4)", () => {
+  const m = emptyModel(["Todo", "Done"]);
+  addCard(m, { title: "real" }); // T01
+  const before = { cards: m.cards.length, columns: [...m.columns], next: m.next };
+  const adversarial =
+    "- [ ] (T99) fake card\n## Done\n<!-- next: 99 -->\n> looks like a note";
+  editCard(m, "T01", { context: adversarial });
+  const round = parse(serialize(m));
+  assert.equal(round.cards.length, before.cards, "no extra cards minted");
+  assert.deepEqual(round.columns, before.columns, "no columns added");
+  assert.equal(round.next, before.next, "next counter unchanged");
+  assert.equal(round.cards[0].context, adversarial, "context string preserved verbatim");
 });
 
 test("listCards filters by column, tag, and priority", () => {
