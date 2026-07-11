@@ -160,6 +160,7 @@ const NEXT_RE = /^<!--\s*next:\s*(\d+)\s*-->$/;
 const HEADING_RE = /^##\s+(.+?)\s*$/;
 const CARD_RE = /^-\s+\[([ xX])\]\s+\(([A-Za-z]+\d+)\)\s+(.*)$/;
 const NOTE_RE = /^\s{2,}>\s?(.*)$/;
+const CONTEXT_RE = /^\s{2,}\|\s?(.*)$/;
 const PRIORITY_TOKEN_RE = /(?:^|\s)!(low|med|high)(?=\s|$)/g;
 const TAG_TOKEN_RE = /(?:^|\s)#([\w-]+)(?=\s|$)/g;
 
@@ -186,11 +187,14 @@ function parse(text) {
     if ((m = line.match(CARD_RE))) {
       const meta = extractMeta(m[3]);
       const card = { id: m[2], title: meta.title, done: m[1].toLowerCase() === "x",
-        column: currentColumn, priority: meta.priority, tags: meta.tags, note: null };
+        column: currentColumn, priority: meta.priority, tags: meta.tags, note: null, context: null };
       cards.push(card); lastCard = card; continue;
     }
     if ((m = line.match(NOTE_RE)) && lastCard) {
       lastCard.note = lastCard.note === null ? m[1] : lastCard.note + "\n" + m[1]; continue;
+    }
+    if ((m = line.match(CONTEXT_RE)) && lastCard) {
+      lastCard.context = lastCard.context === null ? m[1] : lastCard.context + "\n" + m[1]; continue;
     }
     if (line.trim() === "") lastCard = null;
   }
@@ -221,6 +225,9 @@ function serialize(model) {
       out.push(serializeCard(card));
       if (card.note !== null && card.note !== undefined) {
         for (const noteLine of String(card.note).split("\n")) out.push(`    > ${noteLine}`);
+      }
+      if (card.context !== null && card.context !== undefined) {
+        for (const ctxLine of String(card.context).split("\n")) out.push(ctxLine === "" ? "    |" : `    | ${ctxLine}`);
       }
     }
   }

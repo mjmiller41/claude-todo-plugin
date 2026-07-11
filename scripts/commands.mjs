@@ -63,15 +63,18 @@ export function addCard(model, { title, priority = null, tags = [], column = nul
     priority,
     tags: [...tags],
     note: null,
+    context: null,
   };
   model.cards.push(card);
   return { model, card };
 }
 
 /** Edit an existing card in place. `patch` may carry any subset of
- *  { title, priority, tags, note, column }; omitted keys are left untouched.
- *  `priority: null` clears it; `note: null` clears the note; changing `column`
- *  re-syncs the Done coupling exactly as moveCard does. Returns { model, card }. */
+ *  { title, priority, tags, note, context, column }; omitted keys are left untouched.
+ *  `priority: null` clears it; `note: null` clears the note; `context: null`
+ *  clears the context (note and context are independent — editing one never
+ *  touches the other); changing `column` re-syncs the Done coupling exactly as
+ *  moveCard does. Returns { model, card }. */
 export function editCard(model, id, patch = {}) {
   const card = findCard(model, id);
   if (patch.title !== undefined) {
@@ -88,6 +91,7 @@ export function editCard(model, id, patch = {}) {
   }
   if (patch.tags !== undefined) card.tags = [...patch.tags];
   if (patch.note !== undefined) card.note = patch.note === null ? null : String(patch.note);
+  if (patch.context !== undefined) card.context = patch.context === null ? null : String(patch.context);
   if (patch.column !== undefined && patch.column !== null) {
     assertColumn(model, patch.column);
     card.column = patch.column;

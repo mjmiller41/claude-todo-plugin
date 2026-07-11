@@ -26,6 +26,12 @@ const NEXT_RE = /^<!--\s*next:\s*(\d+)\s*-->$/;
 const HEADING_RE = /^##\s+(.+?)\s*$/;
 const CARD_RE = /^-\s+\[([ xX])\]\s+\(([A-Za-z]+\d+)\)\s+(.*)$/;
 const NOTE_RE = /^\s{2,}>\s?(.*)$/;
+// A card's context block: indented "| " lines. The leading indent + "|" sigil
+// makes every context line inert — content that mimics the grammar (a card line,
+// a "## Heading", a "<!-- next: N -->" marker, or a "> note" line) is captured
+// verbatim, never re-interpreted. Blank paragraph breaks are serialized as a
+// bare "    |" so interior line breaks AND empty separator lines survive.
+const CONTEXT_RE = /^\s{2,}\|\s?(.*)$/;
 const PRIORITY_TOKEN_RE = /(?:^|\s)!(low|med|high)(?=\s|$)/g;
 const TAG_TOKEN_RE = /(?:^|\s)#([\w-]+)(?=\s|$)/g;
 
@@ -91,6 +97,7 @@ export function parse(text) {
         priority: meta.priority,
         tags: meta.tags,
         note: null,
+        context: null,
       };
       cards.push(card);
       lastCard = card;
@@ -99,6 +106,12 @@ export function parse(text) {
     if ((m = line.match(NOTE_RE)) && lastCard) {
       // Support multi-line notes by joining with "\n".
       lastCard.note = lastCard.note === null ? m[1] : lastCard.note + "\n" + m[1];
+      continue;
+    }
+    if ((m = line.match(CONTEXT_RE)) && lastCard) {
+      // Multi-paragraph context: join lines with "\n". A bare "    |" carries an
+      // empty line, so blank-line paragraph separators are preserved intact.
+      lastCard.context = lastCard.context === null ? m[1] : lastCard.context + "\n" + m[1];
       continue;
     }
     // Blank or unrecognized line ends a card's note context but is otherwise ignored.
@@ -140,6 +153,11 @@ export function serialize(model) {
       if (card.note !== null && card.note !== undefined) {
         for (const noteLine of String(card.note).split("\n")) {
           out.push(`    > ${noteLine}`);
+        }
+      }
+      if (card.context !== null && card.context !== undefined) {
+        for (const ctxLine of String(card.context).split("\n")) {
+          out.push(ctxLine === "" ? "    |" : `    | ${ctxLine}`);
         }
       }
     }
