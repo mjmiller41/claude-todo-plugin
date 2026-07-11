@@ -7,7 +7,7 @@
 //   node cli.mjs add "Title text" [!high] [#tag ...] [--col "In Progress"]
 //   node cli.mjs move <ID> "<Column>"
 //   node cli.mjs done <ID>
-//   node cli.mjs edit <ID> [--title "..."] [--prio low|med|high|none] [--tags "a,b"] [--note "..."] [--col "<Column>"]
+//   node cli.mjs edit <ID> [--title "..."] [--prio low|med|high|none] [--tags "a,b"] [--note "..."] [--context "..."] [--col "<Column>"]
 //   node cli.mjs remove <ID>            # (alias: rm)
 //   node cli.mjs list [--col X] [--tag y] [--prio high]
 //   node cli.mjs serve [--port 4321]   # localhost board server (zero-click auto-load)
@@ -161,7 +161,7 @@ function cmdEdit(positionals, flags) {
   const file = fileArg(flags);
   const id = positionals[0];
   if (!id) {
-    fail('usage: edit <ID> [--title "..."] [--prio low|med|high|none] [--tags "a,b"] [--note "..."] [--col "Column"]');
+    fail('usage: edit <ID> [--title "..."] [--prio low|med|high|none] [--tags "a,b"] [--note "..."] [--context "..."] [--col "Column"]');
   }
   const model = load(file);
   const patch = {};
@@ -171,9 +171,10 @@ function cmdEdit(positionals, flags) {
     patch.tags = flags.tags.split(",").map((t) => t.trim()).filter(Boolean);
   }
   if (flags.note !== undefined) patch.note = flags.note === "none" || flags.note === "" ? null : flags.note;
+  if (flags.context !== undefined) patch.context = flags.context === "none" || flags.context === "" ? null : flags.context;
   if (flags.col !== undefined) patch.column = flags.col;
   if (Object.keys(patch).length === 0) {
-    fail("nothing to change — pass at least one of --title, --prio, --tags, --note, --col");
+    fail("nothing to change — pass at least one of --title, --prio, --tags, --note, --context, --col");
   }
   const { card } = editCard(model, id, patch);
   save(file, model);
