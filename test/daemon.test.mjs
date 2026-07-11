@@ -309,6 +309,111 @@ test("A7: regular files and in-project symlinks still serve 200", async () => {
   }
 });
 
+// ---- F3: ETag / If-Match optimistic concurrency on todo.md ----
+
+test("A9: GET todo.md returns a content-derived ETag that changes with content", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "nu");
+    const id = await register(d.base, a);
+
+    const r1 = await fetch(`${d.base}/b/${id}/todo.md`);
+    const etag1 = r1.headers.get("etag");
+    assert.ok(etag1, "GET must expose an ETag header");
+
+    // Two GETs of unchanged content return the same ETag.
+    const r2 = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(r2.headers.get("etag"), etag1);
+
+    // After the file changes on disk the ETag changes.
+    writeFileSync(join(a, "todo.md"), "## Todo\n- [ ] (T01) changed\n");
+    const r3 = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.notEqual(r3.headers.get("etag"), etag1);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A10: PUT with matching If-Match succeeds and returns the new ETag", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "xi");
+    const id = await register(d.base, a);
+
+    const cur = await fetch(`${d.base}/b/${id}/todo.md`);
+    const etag = cur.headers.get("etag");
+
+    const body = "## Todo\n- [ ] (T01) saved with if-match\n";
+    const put = await fetch(`${d.base}/b/${id}/todo.md`, {
+      method: "PUT",
+      headers: { "If-Match": etag },
+      body,
+    });
+    assert.ok(put.status >= 200 && put.status < 300, `PUT should be 2xx, got ${put.status}`);
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), body);
+
+    // Response exposes the new content's ETag, and it matches a fresh GET so the
+    // client can chain a further save without refetching.
+    const newEtag = put.headers.get("etag");
+    assert.ok(newEtag, "successful PUT must expose an ETag");
+    const after = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(newEtag, after.headers.get("etag"));
+
+    const body2 = "## Todo\n- [ ] (T01) chained save\n";
+    const put2 = await fetch(`${d.base}/b/${id}/todo.md`, {
+      method: "PUT",
+      headers: { "If-Match": newEtag },
+      body: body2,
+    });
+    assert.ok(put2.status >= 200 && put2.status < 300, "chained PUT with returned ETag should succeed");
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), body2);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A11: PUT with a stale If-Match is 409, file unchanged, carries current state", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "omicron");
+    const id = await register(d.base, a);
+
+    // Grab a now-stale ETag, then let a concurrent writer change the file.
+    const stale = (await fetch(`${d.base}/b/${id}/todo.md`)).headers.get("etag");
+    const concurrent = "## Todo\n- [ ] (T01) concurrent writer\n";
+    writeFileSync(join(a, "todo.md"), concurrent);
+
+    const put = await fetch(`${d.base}/b/${id}/todo.md`, {
+      method: "PUT",
+      headers: { "If-Match": stale },
+      body: "## Todo\n- [ ] (T01) would-be lost update\n",
+    });
+    assert.equal(put.status, 409);
+    // The concurrent writer's data survives byte-for-byte.
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), concurrent);
+    // The 409 carries enough to reconcile: current ETag and/or current content.
+    const curEtag = (await fetch(`${d.base}/b/${id}/todo.md`)).headers.get("etag");
+    assert.equal(put.headers.get("etag"), curEtag);
+    assert.equal(await put.text(), concurrent);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A12: PUT with no If-Match still succeeds (legacy boards keep saving)", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "pi");
+    const id = await register(d.base, a);
+    const body = "## Todo\n- [ ] (T01) legacy save\n";
+    const put = await fetch(`${d.base}/b/${id}/todo.md`, { method: "PUT", body });
+    assert.ok(put.status >= 200 && put.status < 300, `legacy PUT should be 2xx, got ${put.status}`);
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), body);
+  } finally {
+    await d.close();
+  }
+});
+
 test("A8: containment uses real paths on both sides; .. still 403", async () => {
   const d = await startDaemon();
   try {

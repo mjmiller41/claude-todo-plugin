@@ -248,6 +248,11 @@ function projectId(dir) {
   return createHash("sha1").update(resolve(dir)).digest("hex").slice(0, 8);
 }
 
+/** Content-hash ETag (strong, quoted) for a Buffer/string of file content. */
+function etagFor(content) {
+  return `"${createHash("sha1").update(content).digest("hex")}"`;
+}
+
 function loadRegistry(registryFile) {
   try {
     return new Map(Object.entries(JSON.parse(readFileSync(registryFile, "utf8"))));
@@ -396,14 +401,29 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
 
     const todoFile = join(dir, "todo.md");
 
-    // Drag-to-save.
+    // Drag-to-save, with optimistic concurrency. If the client sends If-Match,
+    // it must equal the current file's content ETag or we 409 (never clobber a
+    // concurrent writer's data) and hand back the current ETag + content so the
+    // client can reconcile. A PUT with no If-Match is accepted unconditionally,
+    // so legacy boards keep saving. On success we return the new content's ETag
+    // so the client can chain further saves without a refetch.
     if (method === "PUT" && rest === "/todo.md") {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         try {
+          const ifMatch = req.headers["if-match"];
+          if (ifMatch !== undefined) {
+            const current = existsSync(todoFile) ? readFileSync(todoFile) : Buffer.alloc(0);
+            const currentEtag = etagFor(current);
+            if (ifMatch.trim() !== currentEtag) {
+              return void res
+                .writeHead(409, { ETag: currentEtag, "Content-Type": "text/markdown; charset=utf-8" })
+                .end(current);
+            }
+          }
           atomicWrite(todoFile, body);
-          res.writeHead(204).end();
+          res.writeHead(204, { ETag: etagFor(Buffer.from(body)) }).end();
         } catch (e) {
           res.writeHead(500).end(e.message);
         }
@@ -442,8 +462,11 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
       ext === ".html" ? "text/html; charset=utf-8"
       : ext === ".md" ? "text/markdown; charset=utf-8"
       : "application/octet-stream";
-    res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" });
-    res.end(readFileSync(resolved));
+    // Content-hash ETag lets the board detect stale local state and drives the
+    // If-Match optimistic-concurrency check on PUT /todo.md.
+    const content = readFileSync(resolved);
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store", ETag: etagFor(content) });
+    res.end(content);
   });
 
   // Full teardown: stop the server, drop lingering SSE sockets, and release the
