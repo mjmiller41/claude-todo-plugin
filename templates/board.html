@@ -101,12 +101,44 @@
     font-size: 11px; color: var(--muted); background: var(--panel-2);
     border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px;
   }
-  .card .note {
-    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
-    color: var(--muted); font-size: 12.5px; white-space: pre-wrap; display: none;
+  .card .card-more {
+    margin-top: 6px; color: var(--accent); font-size: 11px; user-select: none;
   }
-  .card.open .note { display: block; }
-  .card .note-toggle { cursor: pointer; color: var(--accent); font-size: 11px; margin-top: 6px; user-select: none; }
+
+  /* View-only card modal (opened by clicking a card). */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(0,0,0,.5);
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .modal-backdrop[hidden] { display: none; }
+  .modal-panel {
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.35);
+    width: 100%; max-width: 560px; max-height: 85vh; overflow-y: auto;
+    padding: 20px 22px; position: relative;
+  }
+  .modal-panel .modal-close {
+    position: absolute; top: 12px; right: 12px;
+    width: 30px; height: 30px; padding: 0; line-height: 1; font-size: 18px; border-radius: 8px;
+  }
+  .modal-panel .m-id { color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+  .modal-panel .m-title { font-size: 18px; font-weight: 600; margin: 4px 40px 14px 0; overflow-wrap: anywhere; }
+  .modal-panel dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; align-items: baseline; }
+  .modal-panel dt { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .modal-panel dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .modal-panel .m-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .modal-panel .m-tag {
+    font-size: 11px; color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px;
+  }
+  .modal-panel .m-section-label {
+    color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; margin: 16px 0 4px;
+  }
+  .modal-panel .m-note, .modal-panel .m-context {
+    white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.55;
+  }
 
   #empty {
     max-width: 560px; margin: 8vh auto; text-align: center; color: var(--muted);
@@ -148,6 +180,16 @@
 
 <div id="board" hidden></div>
 
+<div id="modal" class="modal-backdrop" hidden>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <button id="modalClose" class="modal-close" type="button" aria-label="Close">×</button>
+    <div class="m-id" id="modalId"></div>
+    <div class="m-title" id="modalTitle"></div>
+    <dl id="modalMeta"></dl>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
 <script type="module">
 // ==================== todo-core (mirrors scripts/todo.mjs) ====================
 // Keep in sync with scripts/todo.mjs. Round-trip behavior is covered by
@@ -160,6 +202,7 @@ const NEXT_RE = /^<!--\s*next:\s*(\d+)\s*-->$/;
 const HEADING_RE = /^##\s+(.+?)\s*$/;
 const CARD_RE = /^-\s+\[([ xX])\]\s+\(([A-Za-z]+\d+)\)\s+(.*)$/;
 const NOTE_RE = /^\s{2,}>\s?(.*)$/;
+const CONTEXT_RE = /^\s{2,}\|\s?(.*)$/;
 const PRIORITY_TOKEN_RE = /(?:^|\s)!(low|med|high)(?=\s|$)/g;
 const TAG_TOKEN_RE = /(?:^|\s)#([\w-]+)(?=\s|$)/g;
 
@@ -186,11 +229,14 @@ function parse(text) {
     if ((m = line.match(CARD_RE))) {
       const meta = extractMeta(m[3]);
       const card = { id: m[2], title: meta.title, done: m[1].toLowerCase() === "x",
-        column: currentColumn, priority: meta.priority, tags: meta.tags, note: null };
+        column: currentColumn, priority: meta.priority, tags: meta.tags, note: null, context: null };
       cards.push(card); lastCard = card; continue;
     }
     if ((m = line.match(NOTE_RE)) && lastCard) {
       lastCard.note = lastCard.note === null ? m[1] : lastCard.note + "\n" + m[1]; continue;
+    }
+    if ((m = line.match(CONTEXT_RE)) && lastCard) {
+      lastCard.context = lastCard.context === null ? m[1] : lastCard.context + "\n" + m[1]; continue;
     }
     if (line.trim() === "") lastCard = null;
   }
@@ -221,6 +267,9 @@ function serialize(model) {
       out.push(serializeCard(card));
       if (card.note !== null && card.note !== undefined) {
         for (const noteLine of String(card.note).split("\n")) out.push(`    > ${noteLine}`);
+      }
+      if (card.context !== null && card.context !== undefined) {
+        for (const ctxLine of String(card.context).split("\n")) out.push(ctxLine === "" ? "    |" : `    | ${ctxLine}`);
       }
     }
   }
@@ -473,6 +522,9 @@ let writeSeq = 0;     // bumped on every save. A poll captures this before fetch
                       // catches the poll whose read was already in flight at drop.
 let polling = false;
 let pollStarted = false;
+// Set on dragstart, cleared just after dragend, so the trailing click a drag can
+// synthesize doesn't pop the view-only modal (a plain click still opens it).
+let suppressNextClick = false;
 
 // Re-read the file if it changed on disk since we last loaded it.
 async function checkForUpdate() {
@@ -520,11 +572,17 @@ function renderCard(card) {
       e.dataTransfer.effectAllowed = "move";
       el.classList.add("dragging");
       dragging = true;
+      suppressNextClick = true;
     });
-    el.addEventListener("dragend", () => { el.classList.remove("dragging"); dragging = false; });
+    el.addEventListener("dragend", () => {
+      el.classList.remove("dragging"); dragging = false;
+      setTimeout(() => { suppressNextClick = false; }, 0);
+    });
   }
   const prioClass = card.priority || "none";
   const tags = card.tags.map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
+  const hasMore = (card.note !== null && card.note !== undefined && card.note !== "")
+    || (card.context !== null && card.context !== undefined && card.context !== "");
   el.innerHTML = `
     <div class="row1">
       <span class="dot ${prioClass}" title="${card.priority ? "priority: " + card.priority : "no priority"}"></span>
@@ -532,16 +590,73 @@ function renderCard(card) {
       <span class="id">${escapeHtml(card.id)}</span>
     </div>
     ${tags ? `<div class="tags">${tags}</div>` : ""}
-    ${card.note !== null ? `<div class="note-toggle">notes ▾</div><div class="note">${escapeHtml(card.note)}</div>` : ""}
+    ${hasMore ? `<div class="card-more">details ▾</div>` : ""}
   `;
-  const toggle = el.querySelector(".note-toggle");
-  if (toggle) toggle.addEventListener("click", () => el.classList.toggle("open"));
+  // Clicking the card body opens the view-only modal (unless a drag just ended).
+  el.addEventListener("click", () => { if (!suppressNextClick) openModal(card); });
   return el;
 }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// ---- View-only card modal ----------------------------------------------------
+// Read-only: it shows a card's fields and never mutates the model or todo.md. All
+// values go in via textContent (never innerHTML) so any HTML-ish content renders
+// as inert visible text. Content is rebuilt on every open, so no stale card data
+// can leak from a previously-viewed card.
+const modalEl = document.getElementById("modal");
+
+function metaRow(dl, label, value) {
+  const dt = document.createElement("dt"); dt.textContent = label;
+  const dd = document.createElement("dd"); dd.textContent = value;
+  dl.append(dt, dd);
+}
+
+function openModal(card) {
+  modalEl.querySelector("#modalId").textContent = card.id;
+  modalEl.querySelector("#modalTitle").textContent = card.title;
+
+  const meta = modalEl.querySelector("#modalMeta");
+  meta.textContent = "";
+  metaRow(meta, "Column", card.column);
+  if (card.priority) metaRow(meta, "Priority", card.priority);
+  if (card.tags && card.tags.length) {
+    const dt = document.createElement("dt"); dt.textContent = "Tags";
+    const dd = document.createElement("dd"); dd.className = "m-tags";
+    for (const t of card.tags) {
+      const span = document.createElement("span");
+      span.className = "m-tag"; span.textContent = "#" + t;
+      dd.appendChild(span);
+    }
+    meta.append(dt, dd);
+  }
+
+  const body = modalEl.querySelector("#modalBody");
+  body.textContent = "";
+  const addSection = (label, text) => {
+    if (text === null || text === undefined || text === "") return;
+    const lbl = document.createElement("div");
+    lbl.className = "m-section-label"; lbl.textContent = label;
+    const val = document.createElement("div");
+    val.className = label === "Context" ? "m-context" : "m-note"; // pre-wrap keeps breaks
+    val.textContent = text;
+    body.append(lbl, val);
+  };
+  addSection("Note", card.note);
+  addSection("Context", card.context);
+
+  modalEl.hidden = false;
+}
+
+function closeModal() { modalEl.hidden = true; }
+
+// Backdrop click closes; clicks inside the panel do not (they don't reach here).
+modalEl.addEventListener("click", (e) => { if (e.target === modalEl) closeModal(); });
+modalEl.querySelector("#modalClose").addEventListener("click", closeModal);
+// Escape closes an open modal; a no-op (and error-free) when nothing is open.
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !modalEl.hidden) closeModal(); });
 
 async function readAndRender() {
   const file = await fileHandle.getFile();

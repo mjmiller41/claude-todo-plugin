@@ -46,6 +46,30 @@ const FIXTURES = [
   `## Todo
 - [ ] (T01) bare card
 `,
+  // Multi-paragraph context: interior line breaks AND a blank-line paragraph
+  // separator (a bare "    |") must survive the board's inlined core identically.
+  `<!-- todo-kanban v1 -->
+<!-- columns: Todo, Done -->
+<!-- next: 6 -->
+
+## Todo
+- [ ] (T05) Investigate flaky move !med #bug
+    | para one line 1
+    | para one line 2
+    |
+    | para two after a blank separator
+
+## Done
+- [x] (T03) shipped it #infra
+`,
+  // A single card carrying BOTH a note and a multi-line context — the two blocks
+  // must stay distinct and both round-trip through the board's serializer.
+  `## In Progress
+- [ ] (T07) Wire modal !high #ui
+    > one-line note
+    | context line A
+    | context line B
+`,
 ];
 
 test("board.html parser matches scripts/todo.mjs on all fixtures", () => {

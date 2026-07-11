@@ -45,6 +45,7 @@ test("parse extracts all card fields", () => {
     priority: "low",
     tags: ["fonts"],
     note: "blocked on parser spec",
+    context: null,
   });
 
   const t02 = m.cards.find((c) => c.id === "T02");
@@ -64,9 +65,9 @@ test("model round-trips through serialize→parse (data-level identity)", () => 
     version: VERSION,
     columns: ["Todo", "Done"],
     cards: [
-      { id: "T01", title: "plain", done: false, column: "Todo", priority: null, tags: [], note: null },
-      { id: "T02", title: "rich one", done: false, column: "Todo", priority: "med", tags: ["a", "b"], note: "line1\nline2" },
-      { id: "T03", title: "finished", done: true, column: "Done", priority: "high", tags: [], note: null },
+      { id: "T01", title: "plain", done: false, column: "Todo", priority: null, tags: [], note: null, context: null },
+      { id: "T02", title: "rich one", done: false, column: "Todo", priority: "med", tags: ["a", "b"], note: "line1\nline2", context: null },
+      { id: "T03", title: "finished", done: true, column: "Done", priority: "high", tags: [], note: null, context: null },
     ],
   };
   assert.deepEqual(parse(serialize(model)), model);
@@ -146,6 +147,62 @@ test("emptyModel is a valid, serializable empty board", () => {
   const m = emptyModel();
   assert.equal(m.cards.length, 0);
   assert.deepEqual(parse(serialize(m)), m);
+});
+
+test("context: multi-paragraph block preserves line breaks and blank separators (A1)", () => {
+  const src = `<!-- todo-kanban v1 -->
+<!-- columns: Todo -->
+
+## Todo
+- [ ] (T01) has context
+    | para one line 1
+    | para one line 2
+    |
+    | para two
+`;
+  const m = parse(src);
+  assert.equal(m.cards[0].context, "para one line 1\npara one line 2\n\npara two");
+  assert.equal(m.cards[0].note, null);
+  assert.equal(serialize(m), src); // byte-identical round-trip (A2)
+});
+
+test("context: a card with no context block gets context: null (A1)", () => {
+  const m = parse(`## Todo\n- [ ] (T01) bare\n`);
+  assert.equal(m.cards[0].context, null);
+});
+
+test("context: note and context coexist and stay distinct (A2)", () => {
+  const src = `<!-- todo-kanban v1 -->
+<!-- columns: Todo -->
+
+## Todo
+- [ ] (T01) both
+    > a one-line note
+    | context line 1
+    | context line 2
+`;
+  const m = parse(src);
+  assert.equal(m.cards[0].note, "a one-line note");
+  assert.equal(m.cards[0].context, "context line 1\ncontext line 2");
+  assert.equal(serialize(m), src);
+});
+
+test("context: a card with context but no note round-trips (A2)", () => {
+  const src = `<!-- todo-kanban v1 -->
+<!-- columns: Todo -->
+
+## Todo
+- [ ] (T01) ctx only
+    | only context here
+`;
+  const m = parse(src);
+  assert.equal(m.cards[0].note, null);
+  assert.equal(m.cards[0].context, "only context here");
+  assert.equal(serialize(m), src);
+});
+
+test("context: legacy file with all-null context serializes byte-identically (A3)", () => {
+  assert.equal(serialize(parse(CANONICAL)), CANONICAL);
 });
 
 test("CRLF input is normalized", () => {
