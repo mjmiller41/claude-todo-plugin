@@ -289,6 +289,24 @@ li{margin:8px 0}code{color:#888;font-size:12px}</style>
 <h1>todo-kanban boards</h1><ul>${rows || "<li>(no boards registered yet)</li>"}</ul>`;
 }
 
+// Guard against DNS-rebinding: only serve requests whose Host header (port
+// stripped) names this loopback daemon. A missing/empty Host fails closed.
+export function hostIsLocal(hostHeader) {
+  if (!hostHeader) return false;
+  let host = String(hostHeader).trim();
+  if (!host) return false;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]"); // [::1] or [::1]:port
+    if (end === -1) return false;
+    host = host.slice(1, end);
+  } else {
+    const colon = host.indexOf(":"); // host:port
+    if (colon !== -1) host = host.slice(0, colon);
+  }
+  host = host.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
 // Build the daemon's http server (not yet listening). Exported so tests can
 // drive it on an ephemeral port with a throwaway registry file.
 export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE, selfFile = null } = {}) {
@@ -321,6 +339,9 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
   }
 
   const server = createServer((req, res) => {
+    // DNS-rebinding guard: reject any non-loopback Host before doing any work.
+    if (!hostIsLocal(req.headers.host)) return void res.writeHead(403).end("forbidden");
+
     const url = decodeURIComponent(req.url.split("?")[0]);
     const { method } = req;
 
