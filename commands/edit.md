@@ -3,7 +3,7 @@ description: Edit a card's title, priority, tags, note, or column
 argument-hint: <ID> [--title "..."] [--prio low|med|high|none] [--tags "a,b"] [--note "..."] [--col "Column"]
 ---
 
-Edit an existing card in place. Run from the project root, passing arguments verbatim:
+Edit an existing card in place. Run from the project root. Shell-quote every user-supplied value before substituting it: wrap each argument in single quotes and rewrite any embedded single quote as `'\''`, so spaces and shell metacharacters (`;`, `&`, `|`, `$`, backticks, quotes) are passed as literal text and never executed. For example, `--title "Ship it; now"` becomes `--title 'Ship it; now'`:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" edit $ARGUMENTS
