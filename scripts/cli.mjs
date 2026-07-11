@@ -190,10 +190,31 @@ function cmdRemove(positionals, flags) {
   console.log("removed:\n" + printCard(card));
 }
 
+/** Distinct tags actually present on cards, in first-seen order. */
+function boardTags(model) {
+  const seen = [];
+  for (const c of model.cards) {
+    for (const t of c.tags) if (!seen.includes(t)) seen.push(t);
+  }
+  return seen;
+}
+
 function cmdList(flags) {
   const file = fileArg(flags);
   const model = load(file);
   if (flags.prio && !PRIORITIES.includes(flags.prio)) fail(`invalid --prio ${flags.prio}`);
+  // Validate filters up front so a typo errors (non-zero, on stderr) instead of
+  // silently returning an empty board. Column matching is exact/case-sensitive,
+  // consistent with move/edit's assertColumn.
+  if (flags.col !== undefined && !model.columns.includes(flags.col)) {
+    fail(`unknown --col "${flags.col}" (valid columns: ${model.columns.join(", ")})`);
+  }
+  if (flags.tag !== undefined) {
+    const tags = boardTags(model);
+    if (!tags.includes(flags.tag)) {
+      fail(`unknown --tag "${flags.tag}" (tags on board: ${tags.length ? tags.join(", ") : "(none)"})`);
+    }
+  }
   const cards = listCards(model, { column: flags.col, tag: flags.tag, priority: flags.prio });
   if (!cards.length) {
     console.log("(no matching cards)");
