@@ -1,10 +1,44 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { get } from "node:http";
+import { get, request } from "node:http";
+import { connect } from "node:net";
 import { createDaemon } from "../scripts/cli.mjs";
+
+// Send a fully hand-rolled request over a raw socket so we can omit the Host
+// header entirely (node's http client always sends one). HTTP/1.0 makes Host
+// optional, so a Host-less request reaches the handler instead of a parser 400.
+function rawLine(port, requestText) {
+  return new Promise((resolve, reject) => {
+    const sock = connect(port, "127.0.0.1", () => sock.write(requestText));
+    let buf = "";
+    sock.on("data", (c) => (buf += c));
+    sock.on("end", () => resolve(Number(buf.split(" ")[1])));
+    sock.on("error", reject);
+  });
+}
+
+// Raw HTTP request that lets us set an arbitrary Host header (node:fetch forbids
+// overriding Host). Connects to loopback; `host` overrides only the Host header.
+function raw(port, { method = "GET", path = "/", host, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const headers = {};
+    // Send exactly `host` (including "") when provided; let node add the
+    // default Host when it is undefined.
+    if (host !== undefined) headers.Host = host;
+    if (body !== undefined) headers["Content-Length"] = Buffer.byteLength(body);
+    const req = request({ hostname: "127.0.0.1", port, method, path, headers, setHost: host === undefined }, (res) => {
+      let buf = "";
+      res.on("data", (c) => (buf += c));
+      res.on("end", () => resolve({ status: res.statusCode, body: buf }));
+    });
+    req.on("error", reject);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
 
 // Spin the daemon up on an ephemeral port with a throwaway registry file, so
 // these tests never touch the real shared registry. Returns { base, close }.
@@ -13,8 +47,9 @@ async function startDaemon() {
   const registryFile = join(root, "registry.json");
   const { server, close } = createDaemon({ registryFile });
   await new Promise((res) => server.listen(0, "127.0.0.1", res));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  return { root, base, close };
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+  return { root, base, port, close };
 }
 
 function makeProject(root, name) {
@@ -126,6 +161,276 @@ test("SSE stream emits a change event when todo.md is written", async () => {
     writeFileSync(join(a, "todo.md"), "## Todo\n- [ ] (T01) external edit\n");
     assert.equal(await got, true);
     sseReq.destroy();
+  } finally {
+    await d.close();
+  }
+});
+
+// ---- F1: Host-header validation (DNS-rebinding guard) ----
+
+test("A1: non-local Host on GET /health is 403 and body lacks 'ok'", async () => {
+  const d = await startDaemon();
+  try {
+    for (const host of ["evil.example", "evil.example:4321"]) {
+      const res = await raw(d.port, { path: "/health", host });
+      assert.equal(res.status, 403, `Host: ${host}`);
+      assert.doesNotMatch(res.body, /ok/, `Host: ${host} body`);
+    }
+  } finally {
+    await d.close();
+  }
+});
+
+test("A2: local Host values serve /, /health, /b/<id>/todo.md as before", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "zeta");
+    const id = await register(d.base, a);
+    const locals = ["127.0.0.1", "127.0.0.1:4321", "localhost", "localhost:4321", "[::1]", "[::1]:4321"];
+    for (const host of locals) {
+      const health = await raw(d.port, { path: "/health", host });
+      assert.equal(health.status, 200, `health Host: ${host}`);
+      assert.equal(health.body, "ok", `health body Host: ${host}`);
+
+      const index = await raw(d.port, { path: "/", host });
+      assert.equal(index.status, 200, `index Host: ${host}`);
+      assert.match(index.body, /todo-kanban boards/, `index body Host: ${host}`);
+
+      const todo = await raw(d.port, { path: `/b/${id}/todo.md`, host });
+      assert.equal(todo.status, 200, `todo Host: ${host}`);
+      assert.match(todo.body, /zeta task/, `todo body Host: ${host}`);
+    }
+  } finally {
+    await d.close();
+  }
+});
+
+test("A3: PUT /b/<id>/todo.md with non-local Host is 403, file unchanged", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "eta");
+    const id = await register(d.base, a);
+    const before = readFileSync(join(a, "todo.md"), "utf8");
+    const res = await raw(d.port, {
+      method: "PUT",
+      path: `/b/${id}/todo.md`,
+      host: "evil.example",
+      body: "## Todo\n- [ ] (T01) injected\n",
+    });
+    assert.equal(res.status, 403);
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), before);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A4: POST /register with non-local Host is 403, no new registry entry", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "theta");
+    const regFile = join(d.root, "registry.json");
+    const before = existsSync(regFile) ? readFileSync(regFile, "utf8") : null;
+    const res = await raw(d.port, { method: "POST", path: "/register", host: "evil.example", body: a });
+    assert.equal(res.status, 403);
+    const after = existsSync(regFile) ? readFileSync(regFile, "utf8") : null;
+    assert.equal(after, before, "registry file must not gain an entry");
+  } finally {
+    await d.close();
+  }
+});
+
+test("A5: missing or empty Host header is 403 (fails closed)", async () => {
+  const d = await startDaemon();
+  try {
+    // Truly absent Host (HTTP/1.0, no Host line) reaches the handler as undefined.
+    const missing = await rawLine(d.port, "GET /health HTTP/1.0\r\nConnection: close\r\n\r\n");
+    assert.equal(missing, 403);
+    // Present-but-empty Host value.
+    const empty = await raw(d.port, { path: "/health", host: "" });
+    assert.equal(empty.status, 403);
+  } finally {
+    await d.close();
+  }
+});
+
+// ---- F2: realpath containment for served files ----
+
+test("A6: symlink escaping the project dir is 403 and leaks nothing", async () => {
+  const d = await startDaemon();
+  try {
+    const proj = makeProject(d.root, "iota");
+    // A secret file that lives OUTSIDE the project dir.
+    const outsideDir = join(d.root, "outside");
+    mkdirSync(outsideDir, { recursive: true });
+    const secret = "TOP-SECRET-CONTENTS";
+    writeFileSync(join(outsideDir, "secret.txt"), secret);
+
+    // (a) a file symlink inside the project pointing at the outside secret.
+    symlinkSync(join(outsideDir, "secret.txt"), join(proj, "leak.txt"));
+    // (b) a directory symlink inside the project pointing at the outside dir.
+    symlinkSync(outsideDir, join(proj, "link"));
+
+    const id = await register(d.base, proj);
+
+    const viaFile = await fetch(`${d.base}/b/${id}/leak.txt`);
+    assert.equal(viaFile.status, 403);
+    assert.doesNotMatch(await viaFile.text(), /TOP-SECRET/);
+
+    const viaDir = await fetch(`${d.base}/b/${id}/link/secret.txt`);
+    assert.equal(viaDir.status, 403);
+    assert.doesNotMatch(await viaDir.text(), /TOP-SECRET/);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A7: regular files and in-project symlinks still serve 200", async () => {
+  const d = await startDaemon();
+  try {
+    const proj = makeProject(d.root, "kappa");
+    // A symlink whose real path stays inside the project dir.
+    writeFileSync(join(proj, "inside.txt"), "INSIDE-OK");
+    symlinkSync(join(proj, "inside.txt"), join(proj, "alias.txt"));
+    const id = await register(d.base, proj);
+
+    const md = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(md.status, 200);
+    assert.match(await md.text(), /kappa task/);
+
+    const board = await fetch(`${d.base}/b/${id}/todo-board.html`);
+    assert.equal(board.status, 200);
+    assert.match(await board.text(), /kappa · todo-kanban/);
+
+    const alias = await fetch(`${d.base}/b/${id}/alias.txt`);
+    assert.equal(alias.status, 200);
+    assert.equal(await alias.text(), "INSIDE-OK");
+  } finally {
+    await d.close();
+  }
+});
+
+// ---- F3: ETag / If-Match optimistic concurrency on todo.md ----
+
+test("A9: GET todo.md returns a content-derived ETag that changes with content", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "nu");
+    const id = await register(d.base, a);
+
+    const r1 = await fetch(`${d.base}/b/${id}/todo.md`);
+    const etag1 = r1.headers.get("etag");
+    assert.ok(etag1, "GET must expose an ETag header");
+
+    // Two GETs of unchanged content return the same ETag.
+    const r2 = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(r2.headers.get("etag"), etag1);
+
+    // After the file changes on disk the ETag changes.
+    writeFileSync(join(a, "todo.md"), "## Todo\n- [ ] (T01) changed\n");
+    const r3 = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.notEqual(r3.headers.get("etag"), etag1);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A10: PUT with matching If-Match succeeds and returns the new ETag", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "xi");
+    const id = await register(d.base, a);
+
+    const cur = await fetch(`${d.base}/b/${id}/todo.md`);
+    const etag = cur.headers.get("etag");
+
+    const body = "## Todo\n- [ ] (T01) saved with if-match\n";
+    const put = await fetch(`${d.base}/b/${id}/todo.md`, {
+      method: "PUT",
+      headers: { "If-Match": etag },
+      body,
+    });
+    assert.ok(put.status >= 200 && put.status < 300, `PUT should be 2xx, got ${put.status}`);
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), body);
+
+    // Response exposes the new content's ETag, and it matches a fresh GET so the
+    // client can chain a further save without refetching.
+    const newEtag = put.headers.get("etag");
+    assert.ok(newEtag, "successful PUT must expose an ETag");
+    const after = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(newEtag, after.headers.get("etag"));
+
+    const body2 = "## Todo\n- [ ] (T01) chained save\n";
+    const put2 = await fetch(`${d.base}/b/${id}/todo.md`, {
+      method: "PUT",
+      headers: { "If-Match": newEtag },
+      body: body2,
+    });
+    assert.ok(put2.status >= 200 && put2.status < 300, "chained PUT with returned ETag should succeed");
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), body2);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A11: PUT with a stale If-Match is 409, file unchanged, carries current state", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "omicron");
+    const id = await register(d.base, a);
+
+    // Grab a now-stale ETag, then let a concurrent writer change the file.
+    const stale = (await fetch(`${d.base}/b/${id}/todo.md`)).headers.get("etag");
+    const concurrent = "## Todo\n- [ ] (T01) concurrent writer\n";
+    writeFileSync(join(a, "todo.md"), concurrent);
+
+    const put = await fetch(`${d.base}/b/${id}/todo.md`, {
+      method: "PUT",
+      headers: { "If-Match": stale },
+      body: "## Todo\n- [ ] (T01) would-be lost update\n",
+    });
+    assert.equal(put.status, 409);
+    // The concurrent writer's data survives byte-for-byte.
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), concurrent);
+    // The 409 carries enough to reconcile: current ETag and/or current content.
+    const curEtag = (await fetch(`${d.base}/b/${id}/todo.md`)).headers.get("etag");
+    assert.equal(put.headers.get("etag"), curEtag);
+    assert.equal(await put.text(), concurrent);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A12: PUT with no If-Match still succeeds (legacy boards keep saving)", async () => {
+  const d = await startDaemon();
+  try {
+    const a = makeProject(d.root, "pi");
+    const id = await register(d.base, a);
+    const body = "## Todo\n- [ ] (T01) legacy save\n";
+    const put = await fetch(`${d.base}/b/${id}/todo.md`, { method: "PUT", body });
+    assert.ok(put.status >= 200 && put.status < 300, `legacy PUT should be 2xx, got ${put.status}`);
+    assert.equal(readFileSync(join(a, "todo.md"), "utf8"), body);
+  } finally {
+    await d.close();
+  }
+});
+
+test("A8: containment uses real paths on both sides; .. still 403", async () => {
+  const d = await startDaemon();
+  try {
+    // Real project, then register it via a path with a symlinked ancestor dir.
+    const real = makeProject(d.root, "lambda-real");
+    const linkDir = join(d.root, "lambda-link");
+    symlinkSync(real, linkDir); // linkDir -> real (symlinked ancestor of files)
+    const id = await register(d.base, linkDir);
+
+    // No false 403: the project's own files serve 200 despite the symlinked path.
+    const md = await fetch(`${d.base}/b/${id}/todo.md`);
+    assert.equal(md.status, 200);
+    assert.match(await md.text(), /lambda-real task/);
+
+    // `..` traversal in the URL is still rejected 403 (lexical prefix check).
+    const escape = await raw(d.port, { path: `/b/${id}/../../etc/passwd`, host: "127.0.0.1" });
+    assert.equal(escape.status, 403);
   } finally {
     await d.close();
   }

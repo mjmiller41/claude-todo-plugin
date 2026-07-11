@@ -242,6 +242,38 @@ function applyMove(model, id, column) {
 }
 // ================== end todo-core ==================
 
+// ==================== server-sync (server-mode save w/ conflict retry) ========
+// Self-contained and dependency-injected (fetchFn/parse/serialize/applyMove) so
+// test/board-sync.test.mjs can extract and exercise this exact source. Keep the
+// DOM out of here. Optimistic-concurrency: the PUT carries our last-seen ETag as
+// If-Match. If the daemon answers 409 our cached ETag is stale (someone wrote
+// todo.md since we loaded), so we refetch todo.md, re-apply the pending drag to
+// the FRESH model via applyMove, and retry the PUT once with the fresh ETag — so
+// the concurrent write is merged, never lost. Returns the (possibly re-merged)
+// model, the new ETag to chain further saves from, and the serialized text to
+// use as the poll watermark.
+async function serverSave({ fetchFn, parse, serialize, applyMove, model, etag, pendingMove }) {
+  const put = (m, tag) =>
+    fetchFn("todo.md", {
+      method: "PUT",
+      headers: tag ? { "If-Match": tag } : {},
+      body: serialize(m),
+    });
+  let res = await put(model, etag);
+  if (res.status === 409 && pendingMove) {
+    const fresh = await fetchFn("todo.md", { cache: "no-store" });
+    const text = await fresh.text();
+    const freshEtag = fresh.headers.get("ETag");
+    model = parse(text);
+    applyMove(model, pendingMove.id, pendingMove.column);
+    res = await put(model, freshEtag);
+    etag = freshEtag;
+  }
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return { model, etag: res.headers.get("ETag") || etag, text: serialize(model) };
+}
+// ================== end server-sync ==================
+
 // ---- IndexedDB handle cache (one-click reopen) ----
 const IDB = { db: null };
 function idb() {
@@ -284,6 +316,8 @@ let model = null;
 let canWrite = false;
 let mode = "fs"; // "fs" (File System Access) | "server" (http) | "paste"
 let lastServerText = null;
+let lastServerEtag = null; // ETag of todo.md as last seen via load/poll/save;
+                           // sent as If-Match on the next PUT (optimistic lock)
 const supportsFS = "showOpenFilePicker" in window;
 const isHttp = location.protocol === "http:" || location.protocol === "https:";
 
@@ -322,11 +356,13 @@ function wireDropTarget(colEl, col) {
     if (!card || card.column === col) return;
     applyMove(model, id, col);
     render(model);
-    persist().catch(err => setStatus("save failed: " + err.message));
+    // Pass the drag as the pending move so a 409 (stale ETag) can re-apply it to
+    // the freshly-refetched model instead of losing the concurrent write.
+    persist({ id, column: col }).catch(err => setStatus("save failed: " + err.message));
   });
 }
 
-async function persist() {
+async function persist(pendingMove) {
   // Hold `saving` across the whole write. `dragging` is cleared on dragend —
   // which fires the instant the drop returns, long before this async write
   // lands — so without this flag the poll could re-read the stale file and
@@ -335,10 +371,15 @@ async function persist() {
   writeSeq++;
   try {
     if (mode === "server") {
-      const body = serialize(model);
-      const res = await fetch("todo.md", { method: "PUT", body });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      lastServerText = body; // watermark our own write so the poll won't reload it
+      const r = await serverSave({
+        fetchFn: fetch, parse, serialize, applyMove,
+        model, etag: lastServerEtag, pendingMove,
+      });
+      lastServerEtag = r.etag;
+      lastServerText = r.text; // watermark our own write so the poll won't reload it
+      // On a 409 retry serverSave re-merges against a fresh model; adopt it so
+      // the board reflects the concurrent write that was folded in.
+      if (r.model !== model) { model = r.model; render(model); }
       setStatus("saved " + new Date().toLocaleTimeString());
       return;
     }
@@ -363,6 +404,7 @@ async function serverLoad() {
   if (!res.ok) throw new Error("todo.md not found (HTTP " + res.status + ")");
   const text = await res.text();
   lastServerText = text;
+  lastServerEtag = res.headers.get("ETag"); // record ETag so persist() can If-Match it
   render(parse(text));
   els.filepath.textContent = "todo.md";
   setStatus("loaded " + new Date().toLocaleTimeString());
@@ -381,6 +423,7 @@ async function serverCheck() {
       if (dragging || saving || writeSeq !== seq) return;
       if (text !== lastServerText) {
         lastServerText = text;
+        lastServerEtag = res.headers.get("ETag"); // keep ETag paired with the model we render
         render(parse(text));
         setStatus("updated " + new Date().toLocaleTimeString());
       }

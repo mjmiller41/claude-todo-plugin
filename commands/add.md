@@ -3,7 +3,7 @@ description: Add a card to the kanban board
 argument-hint: "title" [!low|!med|!high] [#tag ...] [--col "Column"]
 ---
 
-Add a card to `todo.md`. Run from the project root, passing the user's arguments verbatim:
+Add a card to `todo.md`. Run from the project root. Shell-quote every user-supplied value before substituting it: wrap each argument in single quotes and rewrite any embedded single quote as `'\''`, so spaces and shell metacharacters (`;`, `&`, `|`, `$`, backticks, quotes) are passed as literal text and never executed. For example, a title of `Ship it; rm -rf /` becomes `'Ship it; rm -rf /'`:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" add $ARGUMENTS

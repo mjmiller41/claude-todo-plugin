@@ -17,7 +17,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve, extname, basename } from "node:path";
+import { dirname, join, resolve, extname, basename, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, serialize, emptyModel, PRIORITIES } from "./todo.mjs";
 import { addCard, moveCard, doneCardById, listCards, editCard, removeCard } from "./commands.mjs";
@@ -248,6 +248,11 @@ function projectId(dir) {
   return createHash("sha1").update(resolve(dir)).digest("hex").slice(0, 8);
 }
 
+/** Content-hash ETag (strong, quoted) for a Buffer/string of file content. */
+function etagFor(content) {
+  return `"${createHash("sha1").update(content).digest("hex")}"`;
+}
+
 function loadRegistry(registryFile) {
   try {
     return new Map(Object.entries(JSON.parse(readFileSync(registryFile, "utf8"))));
@@ -289,6 +294,24 @@ li{margin:8px 0}code{color:#888;font-size:12px}</style>
 <h1>todo-kanban boards</h1><ul>${rows || "<li>(no boards registered yet)</li>"}</ul>`;
 }
 
+// Guard against DNS-rebinding: only serve requests whose Host header (port
+// stripped) names this loopback daemon. A missing/empty Host fails closed.
+export function hostIsLocal(hostHeader) {
+  if (!hostHeader) return false;
+  let host = String(hostHeader).trim();
+  if (!host) return false;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]"); // [::1] or [::1]:port
+    if (end === -1) return false;
+    host = host.slice(1, end);
+  } else {
+    const colon = host.indexOf(":"); // host:port
+    if (colon !== -1) host = host.slice(0, colon);
+  }
+  host = host.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
 // Build the daemon's http server (not yet listening). Exported so tests can
 // drive it on an ephemeral port with a throwaway registry file.
 export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE, selfFile = null } = {}) {
@@ -321,6 +344,9 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
   }
 
   const server = createServer((req, res) => {
+    // DNS-rebinding guard: reject any non-loopback Host before doing any work.
+    if (!hostIsLocal(req.headers.host)) return void res.writeHead(403).end("forbidden");
+
     const url = decodeURIComponent(req.url.split("?")[0]);
     const { method } = req;
 
@@ -375,14 +401,29 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
 
     const todoFile = join(dir, "todo.md");
 
-    // Drag-to-save.
+    // Drag-to-save, with optimistic concurrency. If the client sends If-Match,
+    // it must equal the current file's content ETag or we 409 (never clobber a
+    // concurrent writer's data) and hand back the current ETag + content so the
+    // client can reconcile. A PUT with no If-Match is accepted unconditionally,
+    // so legacy boards keep saving. On success we return the new content's ETag
+    // so the client can chain further saves without a refetch.
     if (method === "PUT" && rest === "/todo.md") {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         try {
+          const ifMatch = req.headers["if-match"];
+          if (ifMatch !== undefined) {
+            const current = existsSync(todoFile) ? readFileSync(todoFile) : Buffer.alloc(0);
+            const currentEtag = etagFor(current);
+            if (ifMatch.trim() !== currentEtag) {
+              return void res
+                .writeHead(409, { ETag: currentEtag, "Content-Type": "text/markdown; charset=utf-8" })
+                .end(current);
+            }
+          }
           atomicWrite(todoFile, body);
-          res.writeHead(204).end();
+          res.writeHead(204, { ETag: etagFor(Buffer.from(body)) }).end();
         } catch (e) {
           res.writeHead(500).end(e.message);
         }
@@ -395,17 +436,37 @@ export function createDaemon({ port = DEFAULT_PORT, registryFile = REGISTRY_FILE
     const relPath = rest === "/" ? "/todo-board.html" : rest;
     const target = relPath === "/todo.md" ? todoFile : join(dir, relPath.replace(/^\/+/, ""));
     const resolved = resolve(target);
-    if (resolved !== resolve(dir) && !resolved.startsWith(resolve(dir) + "/")) {
+    // Lexical prefix check first: blocks `..` traversal in the URL up front,
+    // independent of whether the traversed path exists (so it 403s, not 404s).
+    if (resolved !== resolve(dir) && !resolved.startsWith(resolve(dir) + sep)) {
       return void res.writeHead(403).end();
     }
     if (!existsSync(resolved)) return void res.writeHead(404).end("not found");
+    // Containment on REAL paths, BOTH sides: resolve symlinks in the target and
+    // in the project dir. Realpath'ing the dir too means a project registered via
+    // a path with a symlinked ancestor doesn't false-403; realpath'ing the target
+    // means a symlink (a file, or a symlinked subdirectory) whose real path
+    // escapes the project is rejected 403 before any bytes are read/leaked.
+    let realTarget, realDir;
+    try {
+      realTarget = realpathSync(resolved);
+      realDir = realpathSync(dir);
+    } catch {
+      return void res.writeHead(404).end("not found");
+    }
+    if (realTarget !== realDir && !realTarget.startsWith(realDir + sep)) {
+      return void res.writeHead(403).end();
+    }
     const ext = extname(resolved);
     const type =
       ext === ".html" ? "text/html; charset=utf-8"
       : ext === ".md" ? "text/markdown; charset=utf-8"
       : "application/octet-stream";
-    res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" });
-    res.end(readFileSync(resolved));
+    // Content-hash ETag lets the board detect stale local state and drives the
+    // If-Match optimistic-concurrency check on PUT /todo.md.
+    const content = readFileSync(resolved);
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store", ETag: etagFor(content) });
+    res.end(content);
   });
 
   // Full teardown: stop the server, drop lingering SSE sockets, and release the

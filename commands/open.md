@@ -4,7 +4,10 @@ argument-hint: [--port N]
 ---
 
 Register this project with the shared board daemon and print its URL. Run from the project
-root, passing arguments verbatim:
+root. Shell-quote every user-supplied value before substituting it: wrap each argument in
+single quotes and rewrite any embedded single quote as `'\''`, so spaces and shell
+metacharacters (`;`, `&`, `|`, `$`, backticks, quotes) are passed as literal text and never
+executed. For example, `--port 4321` becomes `--port '4321'`:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/scripts/cli.mjs" open $ARGUMENTS
