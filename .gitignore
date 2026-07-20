@@ -3,3 +3,5 @@ node_modules/
 .gstack/
 .mission/
 .playwright-mcp/
+.vscode/
+IMPLEMENTATION_PLAN.md
